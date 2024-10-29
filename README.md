@@ -15,7 +15,7 @@ A travel assistant chatbot that provides personalized travel recommendations usi
 ## Setup Instructions
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.10
 - [Git](https://git-scm.com/downloads) for version control
 - A `.env` file containing API keys (details below)
 
