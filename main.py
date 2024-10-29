@@ -28,18 +28,59 @@ model = SentenceTransformer("nomic-ai/nomic-embed-text-v1", trust_remote_code=Tr
 st.title("🌍 Travel Chatbot 🧳")
 st.write("Ask about travel destinations, accommodations, activities, or packages! ✈️🌴")
 
-# Initialize session state
+# Define duration options
+duration_options = [
+    "1-7 days",
+    "1-2 weeks",
+    "2-3 weeks",
+    "1 month+",
+]
+
+# Initialize session state with expanded preferences
 if "history" not in st.session_state:
     st.session_state.history = []
 if "user_preferences" not in st.session_state:
-    st.session_state.user_preferences = {"price_range": (0, 1000)}
+    st.session_state.user_preferences = {
+        "price_range": (0, 1000),
+        "travel_themes": [],
+        "trip_duration": "1-7 days",
+        "accommodation_type": "Any"
+    }
 if "user_input" not in st.session_state:
     st.session_state.user_input = ""
 
-# Sidebar with preferences and clear chat button
+# Sidebar with expanded preferences and clear chat button
 st.sidebar.header("🎒 Your Preferences")
+
+# Price range preference
 price_range = st.sidebar.slider("💵 Select Price Range", 0, 5000, (100, 1000))
 st.session_state.user_preferences["price_range"] = price_range
+
+# Travel themes preference
+travel_themes = st.sidebar.multiselect(
+    "🎯 Travel Themes",
+    ["Adventure", "Relaxation", "Cultural", "Food & Dining", "Nature", "Urban Exploration", 
+     "Beach", "Mountains", "Historical", "Luxury", "Budget-friendly", "Family-friendly"],
+    default=st.session_state.user_preferences.get("travel_themes", [])
+)
+st.session_state.user_preferences["travel_themes"] = travel_themes
+
+# Trip duration preference
+trip_duration = st.sidebar.selectbox(
+    "⏱️ Trip Duration",
+    duration_options,
+    index=duration_options.index(st.session_state.user_preferences.get("trip_duration", "1-7 days"))
+)
+st.session_state.user_preferences["trip_duration"] = trip_duration
+
+# Accommodation type preference
+accommodation_options = ["Any", "Hotel", "Resort", "Vacation Rental", "Hostel", "Camping", "Luxury"]
+accommodation_type = st.sidebar.selectbox(
+    "🏨 Accommodation Type",
+    accommodation_options,
+    index=accommodation_options.index(st.session_state.user_preferences.get("accommodation_type", "Any"))
+)
+st.session_state.user_preferences["accommodation_type"] = accommodation_type
 
 if st.sidebar.button("🗑️ Clear Chat History"):
     st.session_state.history = []
@@ -57,26 +98,39 @@ def create_chat_prompt(context_entries, user_query, preferences):
         for i, entry in enumerate(context_entries)
     ])
     
+    # Format travel themes
+    themes_text = ", ".join(preferences["travel_themes"]) if preferences["travel_themes"] else "Any"
+    
     return f"""You are a knowledgeable travel assistant. Provide personalized travel recommendations based on the following information.
 
 Query: {user_query}
 
-Budget: ${preferences['price_range'][0]} - ${preferences['price_range'][1]}
+User Preferences:
+- Budget: ${preferences['price_range'][0]} - ${preferences['price_range'][1]}
+- Travel Themes: {themes_text}
+- Trip Duration: {preferences['trip_duration']}
+- Accommodation Type: {preferences['accommodation_type']}
 
 Available Options:
 {formatted_context}
 
 Instructions:
-1. Focus on options within the user's budget range
+1. Focus on options that match the user's preferences:
+   - Stay within budget range
+   - Align with selected travel themes
+   - Accommodate specified trip duration
+   - Include preferred accommodation type
 2. Highlight key features:
    - Location highlights
    - Accommodation details
    - Must-see attractions
    - Special offers or packages
-3. If recommending multiple options, organize them by best value
+3. If recommending multiple options, organize them by best match to preferences
 4. Include specific prices when available
 5. Be concise but informative
 6. If no perfect matches exist, suggest closest alternatives
+7. Do not print recommendation notes, options and options number, and Note: in the response
+8. Print the response in a structured and easily understandable format.
 
 Format your response in a clear, organized manner with appropriate sections."""
 
@@ -87,9 +141,14 @@ def process_chat():
         # Embed the query
         question_embedding = get_query_embedding(user_input)
         
-        # Add price range to query
-        price_range_text = f"Price Range: ${st.session_state.user_preferences['price_range'][0]} - ${st.session_state.user_preferences['price_range'][1]}"
-        query_with_preferences = f"{price_range_text} {user_input}".strip()
+        # Add preferences to query
+        preferences_text = f"""
+        Price Range: ${st.session_state.user_preferences['price_range'][0]} - ${st.session_state.user_preferences['price_range'][1]}
+        Themes: {', '.join(st.session_state.user_preferences['travel_themes'])}
+        Duration: {st.session_state.user_preferences['trip_duration']}
+        Accommodation: {st.session_state.user_preferences['accommodation_type']}
+        """
+        query_with_preferences = f"{preferences_text} {user_input}".strip()
         
         # Query Pinecone
         query_result = index.query(
