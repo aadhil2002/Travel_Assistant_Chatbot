@@ -2,26 +2,26 @@ import os
 import streamlit as st
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
-import cohere
 from groq import Groq
 import numpy as np
 from dotenv import load_dotenv
+import cohere
 
 # Load environment variables
 load_dotenv()
 
-# Initialize clients only once at startup
+# Initialize API keys
 @st.cache_resource
-def init_clients():
+def init_api_keys():
     return {
-        'cohere': cohere.Client(os.getenv("COHERE_API_KEY")),
         'pinecone': Pinecone(api_key=os.getenv("PINECONE_API_KEY")),
         'groq': Groq(api_key=os.getenv("GROQ_API_KEY")),
-        'model': SentenceTransformer("nomic-ai/nomic-embed-text-v1", trust_remote_code=True)
+        'model': SentenceTransformer("nomic-ai/nomic-embed-text-v1", trust_remote_code=True),
+        'cohere': cohere.Client(os.getenv("COHERE_API_KEY"))
     }
 
-clients = init_clients()
-index = clients['pinecone'].Index("travel-assistant-db")
+api_keys = init_api_keys()
+index = api_keys['pinecone'].Index("travel-assistant-db")
 
 # Streamlit interface
 st.title("🌍 Travel Chatbot 🧳")
@@ -65,8 +65,11 @@ if "conversation_context" not in st.session_state:
     st.session_state.conversation_context = []
 
 def get_query_embedding(text):
-    return clients['model'].encode(text).tolist()
+    return api_keys['model'].encode(text).tolist()
 
+
+
+# Prompt template
 def create_chat_prompt(context_entries, user_query, conversation_history):
     """Enhanced prompt creation with conversation context"""
     context = "\n".join([entry['text'] for entry in context_entries[:3]])
@@ -76,10 +79,10 @@ def create_chat_prompt(context_entries, user_query, conversation_history):
     if conversation_history:
         conversation_context = "Previous conversation:\n" + "\n".join([
             f"User: {msg['content']}" if msg['role'] == 'user' else f"Assistant: {msg['content']}"
-            for msg in conversation_history[-4:]  # Include last 2 exchanges (4 messages)
+            for msg in conversation_history[-4:]
         ]) + "\n\n"
     
-    return f"""{conversation_context}Create a travel recommendation based on:
+    return f"""{conversation_context}Create a travel recommendation based on an imaginary world setting:
 
 Query: {user_query}
 
@@ -103,7 +106,7 @@ Instructions:
    - Include only factual, verified information
    - Remove any reference numbers or internal notes
    - Don't include phrases like "Option X" or "Alternative"
-   - Don't include any metadata or processing notes
+   - Don't include any metadata or processing notes,or Note: and () statements.
    
 3. Response structure:
    - Start with a brief introduction
@@ -116,41 +119,84 @@ Instructions:
    - Appropriate for requested duration
    - Clear and professional
    - Consistent with previous recommendations
-   - Also when try to filter out the locations based on the continent,look at the country and filter,and not by looking at the place or location
-   - Even if the location is incorrect,try to make the response based on the incorrect location,and do not try to correct the incorrect location
-   - Also do not include statements like this in the response: (note: this seems to be an incorrect location, but I've tried to make the response based on it)
+   - When filtering out locations,based on continents,just look only at the country and not at the location.
+   - Every location is not based on real location and is just imaginary
    - Always respond in a positive manner
-   - Do not include these kind of inforamtion: a particular location is not typically associated with the particular country, and even if the retrieved information is incorrect,only respond in a format that is is correct.
+   - Always focus on the previous conversation while provide the response
+   - Structure the response in such a way that the top one is the most affordable,and the bottom one is the most expensive
+   
 
 5. Additional requirements:
    - Be direct and concise
    - Suggest viable alternatives if perfect matches aren't available"""
 
+def rerank_results(query, docs, top_k=3):
+    """
+    Rerank the search results using Cohere's reranking capability
+    """
+    try:
+        # Extract text from docs
+        texts = [doc["text"] for doc in docs]
+        
+        # Use Cohere's rerank endpoint
+        reranked = api_keys['cohere'].rerank(
+            query=query,
+            documents=texts,
+            top_n=top_k,
+            model='rerank-english-v2.0'
+        )
+        
+        # Create new docs list with reranked results
+        reranked_docs = []
+        for result in reranked:
+            # Access the index as an integer attribute
+            doc_index = int(result.index)  # Convert to int explicitly
+            reranked_docs.append({
+                "text": texts[doc_index],
+                "relevance_score": float(result.relevance_score)  # Convert to float explicitly
+            })
+        
+        return reranked_docs
+    except Exception as e:
+        print(f"Error in reranking: {str(e)}")
+        # Fallback to original docs if reranking fails
+        return docs[:top_k]
+
 def get_response(user_input):
-    # Get query embedding
-    embedding = get_query_embedding(user_input)
-    
-    # Query Pinecone
-    results = index.query(
-        vector=embedding,
-        top_k=3,
-        include_metadata=True
-    )
-    
-    if not results.matches:
-        return "I couldn't find relevant information. Please try a different query."
-    
-    # Process results
-    docs = [{"text": match.metadata.get("text", "")} for match in results.matches]
-    
-    # Generate response with conversation context
-    prompt = create_chat_prompt(docs, user_input, st.session_state.conversation_context)
-    response = clients['groq'].chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        model="llama-3.2-90b-text-preview"
-    )
-    
-    return response.choices[0].message.content
+    try:
+        # Get query embedding
+        embedding = get_query_embedding(user_input)
+        
+        # Query Pinecone
+        results = index.query(
+            vector=embedding,
+            top_k=5,
+            include_metadata=True
+        )
+        
+        if not results.matches:
+            return "I couldn't find relevant information. Please try a different query."
+        
+        # Process initial results
+        docs = [{"text": match.metadata.get("text", "")} for match in results.matches]
+        
+        # Rerank results using Cohere
+        reranked_docs = rerank_results(user_input, docs)
+        
+        if not reranked_docs:
+            reranked_docs = docs[:3]
+        
+        # Generate response with conversation context
+        prompt = create_chat_prompt(reranked_docs, user_input, st.session_state.conversation_context)
+        response = api_keys['groq'].chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.2-90b-text-preview"
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Error in get_response: {str(e)}")
+        return "I encountered an error processing your request. Please try again."
 
 def save_current_preferences():
     """Save current preferences to history"""
