@@ -20,10 +20,7 @@ def init_clients():
         'model': SentenceTransformer("nomic-ai/nomic-embed-text-v1", trust_remote_code=True)
     }
 
-
 clients = init_clients()
-
-
 index = clients['pinecone'].Index("travel-assistant-db")
 
 # Streamlit interface
@@ -36,36 +33,42 @@ with st.sidebar:
     
     # Simplified price range with predefined options
     price_ranges = {
-        "Budget ($0-$500)": (0, 500),
-        "Moderate ($500-$1500)": (500, 1500),
-        "Luxury ($1500+)": (1500, 5000)
+        "Budget ($0-$1500)": (0, 1500),
+        "Moderate ($1500-$2500)": (1500, 2500),
+        "Luxury ($2500+)": (2500, 5000)
     }
-    selected_range = st.selectbox("💵 Budget", list(price_ranges.keys()))
+    selected_range = st.selectbox("💵 Budget", list(price_ranges.keys()), key='budget')
     
     # Limit theme selection to 3 choices
     themes = st.multiselect(
         "🎯 Top 3 Themes",
         ["Adventure", "Relaxation", "Cultural", "Food", "Nature", "Urban", "Beach"],
-        max_selections=3
+        max_selections=3,
+        key='themes'
     )
     
     duration = st.selectbox(
         "⏱️ Duration",
-        ["1-7 days", "1-2 weeks", "2-3 weeks", "1 month+"]
+        ["1-7 days", "1-2 weeks", "2-3 weeks", "1 month+"],
+        key='duration'
     )
     
     accommodation = st.selectbox(
         "🏨 Accommodation",
-        ["Any", "Hotel", "Resort", "Rental", "Hostel", "Camping"]
+        ["Any", "Hotel", "Resort", "Rental", "Hostel", "Camping"],
+        key='accommodation'
     )
 
     if st.button("🗑️ Clear Chat"):
         st.session_state.messages = []
+        st.session_state.preferences_history = []
         st.experimental_rerun()
 
-# Initialize chat history
+# Initialize chat history and preferences history
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "preferences_history" not in st.session_state:
+    st.session_state.preferences_history = []
 
 def get_query_embedding(text):
     return clients['model'].encode(text).tolist()
@@ -152,19 +155,41 @@ def get_response(user_input):
     
     return response.choices[0].message.content
 
+def save_current_preferences():
+    """Save current preferences to history"""
+    return {
+        'budget': selected_range,
+        'themes': themes.copy() if themes else [],
+        'duration': duration,
+        'accommodation': accommodation
+    }
+
 # Create a container for the chat history
 chat_container = st.container()
 
-# Display chat history in the container
+# Display chat history with associated preferences
 with chat_container:
-    for message in st.session_state.messages:
+    for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.write(message["content"])
+            
+            # If this message has associated preferences, show them in an expander
+            if idx < len(st.session_state.preferences_history):
+                with st.expander("View preferences at time of query"):
+                    prefs = st.session_state.preferences_history[idx]
+                    st.write(f"Budget: {prefs['budget']}")
+                    st.write(f"Themes: {', '.join(prefs['themes'])}")
+                    st.write(f"Duration: {prefs['duration']}")
+                    st.write(f"Accommodation: {prefs['accommodation']}")
 
 # Chat input
 if prompt := st.chat_input("💬 Ask me anything about travel:"):
-    # Add user message to chat history
+    # Save current preferences before processing the message
+    current_prefs = save_current_preferences()
+    
+    # Add user message and preferences to history
     st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.preferences_history.append(current_prefs)
     
     # Display user message immediately
     with st.chat_message("user"):
@@ -175,4 +200,8 @@ if prompt := st.chat_input("💬 Ask me anything about travel:"):
         with st.spinner("Thinking..."):
             response = get_response(prompt)
             st.write(response)
+            
+            # Add assistant response to history
             st.session_state.messages.append({"role": "assistant", "content": response})
+            # Add current preferences again for the assistant's response
+            st.session_state.preferences_history.append(current_prefs)
