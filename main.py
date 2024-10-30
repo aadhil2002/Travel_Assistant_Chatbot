@@ -150,10 +150,10 @@ def rerank_results(query, docs, top_k=3):
         reranked_docs = []
         for result in reranked:
             # Access the index as an integer attribute
-            doc_index = int(result.index)  # Convert to int explicitly
+            doc_index = int(result.index)
             reranked_docs.append({
                 "text": texts[doc_index],
-                "relevance_score": float(result.relevance_score)  # Convert to float explicitly
+                "relevance_score": float(result.relevance_score)
             })
         
         return reranked_docs
