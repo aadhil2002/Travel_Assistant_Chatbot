@@ -31,15 +31,6 @@ st.write("Ask about travel destinations! ✈️🌴")
 with st.sidebar:
     st.header("🎒 Quick Preferences")
     
-    # Simplified price range with predefined options
-    price_ranges = {
-        "Budget ($0-$1500)": (0, 1500),
-        "Moderate ($1500-$2500)": (1500, 2500),
-        "Luxury ($2500+)": (2500, 5000)
-    }
-    selected_range = st.selectbox("💵 Budget", list(price_ranges.keys()), key='budget')
-    
-    # Limit theme selection to 3 choices
     themes = st.multiselect(
         "🎯 Top 3 Themes",
         ["Adventure", "Relaxation", "Cultural", "Food", "Nature", "Urban", "Beach"],
@@ -62,28 +53,37 @@ with st.sidebar:
     if st.button("🗑️ Clear Chat"):
         st.session_state.messages = []
         st.session_state.preferences_history = []
-        st.experimental_rerun()
+        st.session_state.conversation_context = []
+        st.rerun()
 
-# Initialize chat history and preferences history
+# Initialize session state variables
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "preferences_history" not in st.session_state:
     st.session_state.preferences_history = []
+if "conversation_context" not in st.session_state:
+    st.session_state.conversation_context = []
 
 def get_query_embedding(text):
     return clients['model'].encode(text).tolist()
 
-def create_chat_prompt(context_entries, user_query):
-    """Simplified prompt creation"""
-    price_range = price_ranges[selected_range]
+def create_chat_prompt(context_entries, user_query, conversation_history):
+    """Enhanced prompt creation with conversation context"""
     context = "\n".join([entry['text'] for entry in context_entries[:3]])
     
-    return f"""Create a travel recommendation based on:
+    # Create conversation history string
+    conversation_context = ""
+    if conversation_history:
+        conversation_context = "Previous conversation:\n" + "\n".join([
+            f"User: {msg['content']}" if msg['role'] == 'user' else f"Assistant: {msg['content']}"
+            for msg in conversation_history[-4:]  # Include last 2 exchanges (4 messages)
+        ]) + "\n\n"
+    
+    return f"""{conversation_context}Create a travel recommendation based on:
 
 Query: {user_query}
 
 User Preferences:
-- Budget: ${price_range[0]}-${price_range[1]}
 - Themes: {', '.join(themes) if themes else 'Any'}
 - Duration: {duration}
 - Accommodation: {accommodation}
@@ -92,40 +92,37 @@ Available Options:
 {context}
 
 Instructions:
-1. Present recommendations in a clear, direct format focusing on:
-   - Destination name and country
-   - Location highlights and unique features
-   - Accommodation details matching user's preferences
-   - Must-see attractions
-   - Special offers or packages with specific prices
-   
+1. Present recommendations that:
+   - Consider the previous conversation context when relevant
+   - Are consistent with any previously discussed destinations
+   - Address any follow-up questions about previously mentioned places
+   - Present new information while maintaining context
+
 2. Format guidelines:
    - Present each destination as a separate section
    - Include only factual, verified information
-   - Remove any reference numbers, option numbers, or internal notes
-   - Don't mention data sources or adjustments
+   - Remove any reference numbers or internal notes
    - Don't include phrases like "Option X" or "Alternative"
    - Don't include any metadata or processing notes
    
 3. Response structure:
    - Start with a brief introduction
    - List main destinations with detailed breakdowns
-   - Include specific prices where available
    - End with relevant practical tips
    
 4. Keep the response:
    - Focused on user's preferences
-   - Within specified budget range
    - Aligned with selected themes
    - Appropriate for requested duration
    - Clear and professional
-   - Also when try to filter out the locations based on the continent,look at the country and filter,and not by looking at the place or location.
+   - Consistent with previous recommendations
+   - Also when try to filter out the locations based on the continent,look at the country and filter,and not by looking at the place or location
    - Even if the location is incorrect,try to make the response based on the incorrect location,and do not try to correct the incorrect location
    - Also do not include statements like this in the response: (note: this seems to be an incorrect location, but I've tried to make the response based on it)
    - Always respond in a positive manner
+   - Do not include these kind of inforamtion: a particular location is not typically associated with the particular country, and even if the retrieved information is incorrect,only respond in a format that is is correct.
 
 5. Additional requirements:
-   - Include exact prices when available
    - Be direct and concise
    - Suggest viable alternatives if perfect matches aren't available"""
 
@@ -133,7 +130,7 @@ def get_response(user_input):
     # Get query embedding
     embedding = get_query_embedding(user_input)
     
-    # Query Pinecone with reduced top_k
+    # Query Pinecone
     results = index.query(
         vector=embedding,
         top_k=3,
@@ -146,8 +143,8 @@ def get_response(user_input):
     # Process results
     docs = [{"text": match.metadata.get("text", "")} for match in results.matches]
     
-    # Generate response
-    prompt = create_chat_prompt(docs, user_input)
+    # Generate response with conversation context
+    prompt = create_chat_prompt(docs, user_input, st.session_state.conversation_context)
     response = clients['groq'].chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama-3.2-90b-text-preview"
@@ -158,7 +155,6 @@ def get_response(user_input):
 def save_current_preferences():
     """Save current preferences to history"""
     return {
-        'budget': selected_range,
         'themes': themes.copy() if themes else [],
         'duration': duration,
         'accommodation': accommodation
@@ -173,11 +169,9 @@ with chat_container:
         with st.chat_message(message["role"]):
             st.write(message["content"])
             
-            # If this message has associated preferences, show them in an expander
             if idx < len(st.session_state.preferences_history):
                 with st.expander("View preferences at time of query"):
                     prefs = st.session_state.preferences_history[idx]
-                    st.write(f"Budget: {prefs['budget']}")
                     st.write(f"Themes: {', '.join(prefs['themes'])}")
                     st.write(f"Duration: {prefs['duration']}")
                     st.write(f"Accommodation: {prefs['accommodation']}")
@@ -187,8 +181,10 @@ if prompt := st.chat_input("💬 Ask me anything about travel:"):
     # Save current preferences before processing the message
     current_prefs = save_current_preferences()
     
-    # Add user message and preferences to history
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Add user message to conversation context and history
+    user_message = {"role": "user", "content": prompt}
+    st.session_state.conversation_context.append(user_message)
+    st.session_state.messages.append(user_message)
     st.session_state.preferences_history.append(current_prefs)
     
     # Display user message immediately
@@ -201,7 +197,8 @@ if prompt := st.chat_input("💬 Ask me anything about travel:"):
             response = get_response(prompt)
             st.write(response)
             
-            # Add assistant response to history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            # Add current preferences again for the assistant's response
+            # Add assistant response to conversation context and history
+            assistant_message = {"role": "assistant", "content": response}
+            st.session_state.conversation_context.append(assistant_message)
+            st.session_state.messages.append(assistant_message)
             st.session_state.preferences_history.append(current_prefs)
